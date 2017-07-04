@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+
+body {
+	text-align: center;
+	padding-top: 40px !important;
+	padding-bottom: 40px;
+	background-color: #f5f5f5;
+	font-family: courier;    
+}
+div {
+    font-family: courier;
+    max-width: 600px;        
+    padding: 19px 29px 29px;
+    margin: 0 auto 20px;
+    border: 1px solid #e5e5e5;
+    background-color: #fff;    
+}
+
+
+</style>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://code.jquery.com/mobile/1.4.5/jquery.mobile-1.4.5.min.css">
+<script src="https://code.jquery.com/jquery-1.11.3.min.js"></script>
+<script src="https://code.jquery.com/mobile/1.4.5/jquery.mobile-1.4.5.min.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+
+<script>
+
+function update_html(response){
+
+    //Parse current status into the display
+    
+    //Show username
+	$("#h2").text(response.name);
+
+    //If door service is offline
+	if(!response.online){
+		$("#error").html("<b>Shit bro, something went wrong!<b>");
+		$("#Operate").hide();
+
+    //If this user is disabled or unknown
+	} else if(response.disabled){
+		$("#Operate").hide();
+        
+        //Show login fields
+		$("#login").show()
+        
+        //Show door status
+		if(response.door_closed){
+			$("#status2").text('Closed')
+		} else {
+			$("#status2").text('Open')
+		}
+    
+    //If door is closed and user is approved
+	} else if(response.door_closed){
+			
+		$("#buttonName").text("Open");
+
+		$("#Operate").attr({
+			"class" : "ui-btn ui-icon-arrow-u ui-btn-icon-left"
+		});
+        
+        $("#Operate").show();
+	
+    //If door is open and user is approved
+	} else {
+
+		$("#buttonName").text("Close");
+
+		$("#Operate").attr({
+			"class" : "ui-btn ui-icon-arrow-d ui-btn-icon-left"
+		});
+        
+        $("#Operate").show();
+	}
+}
+
+function update_status(){
+    //Get current status
+	$.ajax({
+		url: 'php/door_control.php',
+		dataType: 'json',
+		success: function (response) {
+			update_html(response);
+	   }
+	});
+}
+
+
+$(document).ready(function(){
+
+    //Onload
+
+	$("#login").hide()
+    $("#Operate").hide()
+
+    //Get current status
+	update_status()
+
+	//Activate door on button press
+    $("#Operate").click(function(){
+    
+        //Display current operation
+
+		$("#status").fadeIn();
+
+		if($("#Operate").text() == 'Open'){
+	        	$("#status").text("Opening...");
+		        $("#status").fadeOut(15000);
+				setTimeout(update_status, 2000);
+		} else {
+	        	$("#status").text("Closing...");
+		        $("#status").fadeOut(15000);
+				setTimeout(update_status, 16000);
+		}
+		
+        //POST command to operate door
+		$.ajax({
+			url: 'php/door_control.php',
+			method: 'POST',
+			data: {'OP': "activate"},
+			dataType: 'json',
+			success: function (response) {
+				update_html(response);
+			}
+		});
+    });
+
+    //Submit password
+	$("#submit_pw").click(function(){
+        
+		$.ajax({
+			url: 'php/door_control.php',
+			method: 'POST',
+			data: {'OP': "activate", "PW": $("#pswd").val()},
+			dataType: 'json',
+			success: function (response) {}
+		});
+	});
+});
+
+
+</script>
+
+</head>
+<body>
+<br>
+<br>
+<div>
+	<h1 id="h2">Thinking...</h1>
+	<br>
+	<a href="#" id="Operate" class="ui-btn ui-icon-arrow-u ui-btn-icon-left"><text id="buttonName"></text></a>
+	<br>
+	<p id="status"></p>
+	<p id="error"></p>
+	
+	<div id="login" class="hidden">
+		<label for="pswd" class="ui-hidden-accessible">Password:</label>
+		<input type="password" name="passw" id="pswd" placeholder="Password">
+		<button id="submit_pw">Open</button>
+		<br>
+		<p id="status2"></p>
+	</div>
+</div>
+
+</body>
+</html>
+
