@@ -41,8 +41,8 @@ STATUS_LED_OUTPUT_NAME = 'Status_LED'
 
 OPEN = 0
 CLOSED = 1
-ON = 0
-OFF = 1
+OFF = 0
+ON = 1
 
 INSTRUCTION_TIMEOUT  = 1 #seconds
 
@@ -68,10 +68,18 @@ class InterruptHandler(object):
         #print(type(event))
         #print(event)
     
+        #<class 'pifacecommon.interrupts.InterruptEvent'>
+        #interrupt_flag:    0b100000
+        #interrupt_capture: 0b1011111
+        #pin_num:           5
+        #direction:         0
+        #chip:              <pifacedigitalio.core.PiFaceDigital object at 0xb5bb5b50>
+        #timestamp:         1499169992.78806
+    
         ev = EventContainer(source=self.event_source,
                             type=self.event_type,
                             value=self.event_value,
-                            creation=time.time())    
+                            creation=event.timestamp)    
                             
         self.event_queue.put(ev)
 
@@ -255,8 +263,8 @@ class InputOutputHandler(object):
                                             stop_cmd=config.get('Commands', 'stop_cmd'))
                                             
         #Lock status                      
-        self.door_locked = True
-        self.light_locked = True
+        self.door_locked = False
+        self.light_locked = False
 
         #Initialise PiFace and interrupts
         pifacedigitalio.init()
