@@ -28,7 +28,7 @@ class EventHandler(object):
             logfile.write("'{}','{}','{}','{}'\r\n".format(str(datetime.datetime.now()), source, type, value))
             logfile.close()
         except Exception as e:
-            self.logger.exception('Error writing to file: {}, {}'.format(e.message, e.args))
+            self.logger.exception('Error writing to file: {}, {}'.format(type(e).__name__, e.args))
     
 
     def __insert_into_mysql(self, source, type, value):
@@ -43,7 +43,7 @@ class EventHandler(object):
             mysql_conn.commit()
             mysql_conn.close()
         except Exception as e:
-            self.logger.exception('Error inserting in MySQL: {}, {}'.format(e.message, e.args))
+            self.logger.exception('Error inserting in MySQL: {}, {}'.format(type(e).__name__, e.args))
             mysql_conn.rollback()
     
     

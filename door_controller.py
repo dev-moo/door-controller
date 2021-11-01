@@ -33,7 +33,7 @@ PifaceOutput = collections.namedtuple('Output', 'name description pin')
 InputCommands = collections.namedtuple('InputCommands',
                                        'toggle_door_cmd open_door_cmd close_door_cmd light_cmd control_wire stop_cmd')
 
-EventContainer = collections.namedtuple('Event', 'source type value creation')                                       
+EventContainer = collections.namedtuple('Event', 'source type value creation hardware pin')                                       
                                        
 DOOR_STATUS_INPUT_NAME = 'Door_Status'
 DOOR_RELAY_OUTPUT_NAME = 'Door_Relay'
@@ -43,6 +43,7 @@ OPEN = 0
 CLOSED = 1
 OFF = 0
 ON = 1
+PRESSED = 1
 
 INSTRUCTION_TIMEOUT  = 1 #seconds
 
@@ -51,6 +52,7 @@ BUTTON = 'Button'
 NETWORK = 'Network'
 MONITORING = 'Monitoring'
 INTERNAL = 'Internal'
+ERROR = 'Error'
 
 
 class InterruptHandler(object):
@@ -79,7 +81,9 @@ class InterruptHandler(object):
         ev = EventContainer(source=self.event_source,
                             type=self.event_type,
                             value=self.event_value,
-                            creation=event.timestamp)    
+                            creation=event.timestamp,
+                            hardware=True,
+                            pin=event.pin_num)    
                             
         self.event_queue.put(ev)
 
@@ -87,29 +91,53 @@ class InterruptHandler(object):
 class InputOutputHandler(object):
 
     """Handles Input/Output operations on PiFace"""
-
+    
+    
+    def input_pin(self, pin): return self.pifacedigital.input_pins[pin].value
+    
+    def output_pin(self, pin): return self.pifacedigital.output_pins[pin].value
+    
+    
+    def __input_filter(self, event):
+    
+        if not event.hardware:
+            return True
+            
+        pin_val = self.input_pin(event.pin)
+        
+        if event.type == 'Door_Status' and event.value == 'Rising_Edge' and pin_val == OPEN:
+            return True
+        elif pin_val == PRESSED:
+            return True
+           
+        return False
+        
 
     def __toggle_door(self):
         self.operate_door.set()
 
     def __open_door(self):
-        if self.pifacedigital.input_pins[self.door_status_pin].value == CLOSED:
+        if self.input_pin(self.door_status_pin) == CLOSED:
             self.operate_door.set()
 
     def __close_door(self):
-        if self.pifacedigital.input_pins[self.door_status_pin].value == OPEN:
+        if self.input_pin(self.door_status_pin) == OPEN:
             self.operate_door.set()
 
     def __light(self):
         self.operate_light.set()
         
-    def __log_relay_state(self):
-        
-        val = 'Off'
-        if self.pifacedigital.output_pins[self.door_relay_pin].value == ON:
-            val = 'On'
-        
-        self.logging_queue.put(self.__create_event_obj(MONITORING, 'Relay', val))
+    def __log_input_pin_state(self, ev):
+                
+        self.logging_queue.put(self.__create_event_obj(MONITORING,
+                                                       ev.type,
+                                                       self.input_pin(ev.pin)))
+                                                       
+    def __log_output_pin_state(self, ev):
+                
+        self.logging_queue.put(self.__create_event_obj(MONITORING,
+                                                       ev.type,
+                                                       self.output_pin(ev.pin)))
         
 
     def __flash_status_led(self):
@@ -118,7 +146,7 @@ class InputOutputHandler(object):
     
         while not self.stop_event.isSet():
             
-            if self.pifacedigital.input_pins[self.door_status_pin].value == CLOSED:
+            if self.input_pin(self.door_status_pin) == CLOSED:
                 self.pifacedigital.leds[self.led_status0_pin].set_high()
                 sleep(3)
                 self.pifacedigital.leds[self.led_status0_pin].set_low()
@@ -134,7 +162,7 @@ class InputOutputHandler(object):
     
         """Poll relay status to check its not stuck on"""
 
-        current_state = self.pifacedigital.output_pins[self.door_relay_pin].value
+        current_state = self.output_pin(self.door_relay_pin)
         
         if last_state == 1 and current_state == 1:
             self.logger1.info('Resetting Relay')
@@ -190,6 +218,25 @@ class InputOutputHandler(object):
                 self.operate_light.clear()
 
 
+    def __update_door_info(self):
+        
+        status = self.input_pin(self.door_status_pin)
+        
+        if status == self.last_status:
+            return None
+        
+        if status == OPEN:
+            self.last_status = OPEN
+            self.last_open_time = time.time()
+            self.logging_queue.put(self.__create_event_obj(MONITORING, 'Door_Status', self.door_status_pin))
+        else:
+            self.last_status = CLOSED
+            self.last_closed_time = time.time()
+            self.logging_queue.put(self.__create_event_obj(MONITORING, 'Door_Status', self.door_status_pin))
+        
+
+
+
     def __process_input(self):
 
         """Process incoming events on event_queue"""
@@ -200,40 +247,52 @@ class InputOutputHandler(object):
 
             if readable[0] is self.event_queue:
 
-                ev = self.event_queue.get()
+                event = self.event_queue.get()
                 
-                event = ev.type
-                
-                if (time.time() - ev.creation ) < INSTRUCTION_TIMEOUT:
-                
-                    self.logging_queue.put(ev)
+                if (time.time() - event.creation) > INSTRUCTION_TIMEOUT:
+                    self.logging_queue.put(self.__create_event_obj(ERROR, 'TimeOut',  str(time.time() - event.creation)))
+                    self.logger1.info("Instruction rejected due to timeout: '{}', '{}', '{}'".format(event.source, event.type, event.value))
                     
-                    if event == self.input_commands.toggle_door_cmd:
+                elif not self.__input_filter(event):
+                    self.logging_queue.put(self.__create_event_obj(ERROR, 'Filtered', '{}, {}, {}'.format(event.source, event.type, event.value)))
+                    
+                else:
+                
+                    self.logging_queue.put(event)    
+                    
+                    if event.type == self.input_commands.toggle_door_cmd:
                         self.__toggle_door()
-                    elif event == self.input_commands.light_cmd:
+                        self.__update_door_info()
+                    elif event.type == self.input_commands.light_cmd:
                         self.__light()
-                    elif event == self.input_commands.open_door_cmd:
+                    elif event.type == self.input_commands.open_door_cmd:
                         self.__open_door()
-                    elif event == self.input_commands.close_door_cmd:
+                        self.__update_door_info()
+                    elif event.type == self.input_commands.close_door_cmd:
                         self.__close_door()
-                    elif event == self.input_commands.control_wire:
-                        self.__log_relay_state()
-                    elif event == self.input_commands.stop_cmd:
+                        self.__update_door_info()
+                    elif event.type == self.input_commands.control_wire:
+                        self.__log_output_pin_state(event)
+                        self.__update_door_info()
+                    elif event.type == self.input_commands.stop_cmd:
                         self.__del__()
                         return None
-                
-                else:
-                    self.logger1.info("Instruction rejected due to timeout: '{}', '{}', '{}'".format(ev.source, ev.type, ev.value))
+                        
+                    
+                    #if event.hardware:
+                    #    self.__log_input_pin_state(event)                 
         
         
-    def __create_event_obj(self, src, type, val=None):
+    def __create_event_obj(self, src, type, val=None, pin_num=None):
     
         """Create event object"""
     
         return EventContainer(source=src,
                               type=type,
                               value=val,
-                              creation=time.time())
+                              creation=time.time(),
+                              hardware=False,
+                              pin=pin_num)
 
 
     def __init__(self):
@@ -241,10 +300,8 @@ class InputOutputHandler(object):
         #Setup logging
         self.logger1 = log_handler.get_log_handler(
             'door_controller_log.txt', 'info', 'door.IOHandler')
-            
-        #self.logger2 = log_handler.get_log_handler(
-        #    'door_controller_log.txt', 'info', 'door.eventhandler')
 
+            
         self.logger1.info('Starting: InputOutputHandler')
 
         #Open config file
@@ -254,7 +311,7 @@ class InputOutputHandler(object):
         #Parse inputs and outputs from config file
         self.inputs, self.outputs = parse_config(config)
 
-        #Parse commands from config file
+        #Parse commands from config file in named tuple
         self.input_commands = InputCommands(toggle_door_cmd=config.get('Commands', 'toggle_door_cmd'),
                                             open_door_cmd=config.get('Commands', 'open_door_cmd'),
                                             close_door_cmd=config.get('Commands', 'close_door_cmd'),
@@ -271,17 +328,23 @@ class InputOutputHandler(object):
         self.pifacedigital = pifacedigitalio.PiFaceDigital()
         self.listener = pifacedigitalio.InputEventListener(chip=self.pifacedigital)
 
-        #Assign output pins
+        #Output pins
         self.door_relay_pin = None
-        self.door_status_pin = None
         self.led_status0_pin = None
+        
+        #Input pins
+        self.door_status_pin = None
 
         #Queue to capture input events
         self.event_queue = pollable_queue.PollableQueue()
+        
+        #Queue to log events to
         self.logging_queue = pollable_queue.PollableQueue()
         
+        #Instantiate logging module
         self.log_events = event_handler.EventHandler(self.logging_queue, self.input_commands.stop_cmd)
         
+        #Log starting event
         self.logging_queue.put(self.__create_event_obj(INTERNAL, 'Starting'))
 
         #Dict to store interrupt functions about to be generated
@@ -296,32 +359,38 @@ class InputOutputHandler(object):
             if piface_in.name == DOOR_STATUS_INPUT_NAME:
                 self.logger1.info('Setting door status input to pin: {}'.format(piface_in.pin))
                 self.door_status_pin = piface_in.pin
-
+            
+            #Disable 10K pullup resistor on piface input pin
             if piface_in.disablepullup:
                 self.logger1.info('Disabling pullup on input {}'.format(piface_in.name))
                 pifacedigitalio.digital_write_pullup(piface_in.pin, 0)
 
+            #Create interrupt listener and associated function for falling edges
             if piface_in.falling:
                 self.logger1.info('Creating Falling Edge Listener on input: {}'.format(piface_in.name))
                 #e_obj = self.__create_event_obj(piface_in.type, piface_in.name, 'Falling_Edge')
                 self.intrupt_funcs[key + '_falling'] = getattr(InterruptHandler(piface_in.type, piface_in.name, 'Falling_Edge', self.event_queue), 'interrupt_function')
                 self.listener.register(piface_in.pin, pifacedigitalio.IODIR_FALLING_EDGE, self.intrupt_funcs[key + '_falling'])
 
+            #Create interrupt listener and associated function for rising edges
             if piface_in.rising:
                 self.logger1.info('Creating Rising Edge Listener on input: {}'.format(piface_in.name))
                 #e_obj = self.__create_event_obj(piface_in.type, piface_in.name, 'Rising_Edge')
                 self.intrupt_funcs[key + '_rising'] = getattr(InterruptHandler(piface_in.type, piface_in.name, 'Rising_Edge', self.event_queue), 'interrupt_function')
                 self.listener.register(piface_in.pin, pifacedigitalio.IODIR_RISING_EDGE, self.intrupt_funcs[key + '_rising'])
 
+                
         #Processing outputs
         for key in self.outputs:
 
             piface_out = self.outputs[key]
-
+            
+            #Set relay output pin on piface
             if piface_out.name == DOOR_RELAY_OUTPUT_NAME:
                 self.logger1.info('Creating door relay on output: {}'.format(piface_out.pin))
                 self.door_relay_pin = piface_out.pin
-
+    
+            #Set status LED output pin on piface
             if piface_out.name == STATUS_LED_OUTPUT_NAME:
                 self.logger1.info('Creating status LED on output: {}'.format(piface_out.pin))
                 self.led_status0_pin = piface_out.pin
@@ -329,6 +398,7 @@ class InputOutputHandler(object):
 
         self.logger1.info('Starting worker threads')
 
+        #Create threading events and clear them
         self.stop_event = threading.Event()
         self.operate_door = threading.Event()
         self.operate_light = threading.Event()
@@ -337,7 +407,7 @@ class InputOutputHandler(object):
         self.operate_door.clear()
         self.operate_light.clear()
 
-        #Start thread to process input events
+        #Start threads to process input events
         self.process_input_thread = threading.Thread(name='process_input_thread',
                                                      target=self.__process_input)
 
@@ -356,6 +426,11 @@ class InputOutputHandler(object):
 
         self.check_relay_thread = None
         self.__check_relay_state()
+        
+        #Monitoring
+        self.last_open_time = None
+        self.last_closed_time = None
+        self.last_status = None
 
         #Activate interrupts
         self.listener.activate()
@@ -376,7 +451,8 @@ class InputOutputHandler(object):
         #pifacedigitalio.deinit()
         sys.exit()
 
-        
+    
+    """PUBLIC METHODS"""
         
     def activate_door(self, val=''):
         self.event_queue.put(self.__create_event_obj(NETWORK,
@@ -395,7 +471,13 @@ class InputOutputHandler(object):
                                                      self.input_commands.light_cmd, val))    
 
     def get_status(self):
-        return {'STATUS': self.pifacedigital.input_pins[self.door_status_pin].value}
+        return  {'STATUS': self.pifacedigital.input_pins[self.door_status_pin].value,
+                 'DOOR_LOCKED': self.door_locked,
+                 'LIGHT_LOCKED': self.light_locked,
+                 'LAST_OPEN': self.last_open_time,
+                 'LAST_CLOSED': self.last_closed_time}
+                 
+        #return {'STATUS': self.pifacedigital.input_pins[self.door_status_pin].value}
 
     def shutdown(self):
         self.__del__()

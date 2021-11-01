@@ -125,10 +125,10 @@ if __name__ == "__main__":
     HOST = CONFIG.get('Server', 'server_ip')
     PORT = int(CONFIG.get('Server', 'server_port'))
 
-    LOGGER1 = log_handler.get_log_handler(LOG_FILENAME, 'debug', 'server.UDPHandler')
+    LOGGER1 = log_handler.get_log_handler(LOG_FILENAME, 'info', 'server.UDPHandler')
 
     JSON_HANDLER = JSONHandler(log_handler.get_log_handler(LOG_FILENAME,
-                                                           'debug',
+                                                           'info',
                                                            'server.JSONParser'))
 
     LOGGER1.info('Starting UPD server at %s:%d', HOST, PORT)
